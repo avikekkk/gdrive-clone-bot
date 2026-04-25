@@ -1,0 +1,28 @@
+[project]
+name = "gdrive-kurigram-cloner-bot"
+version = "0.1.0"
+description = "Kurigram bot to clone Google Drive files/folders into a fixed destination."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "kurigram",
+  "tgcrypto",
+  "rich",
+  "google-api-python-client==2.172.0",
+  "google-auth==2.41.1",
+  "google-auth-oauthlib==1.2.2",
+  "python-dotenv==1.1.0",
+]
+
+[project.scripts]
+clonebot = "bot:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = [
+  "/bot.py",
+  "/clonebot",
+]
