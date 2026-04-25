@@ -65,7 +65,7 @@ def load_config() -> BotConfig:
 
     if not has_service_account and not has_oauth:
         raise ConfigError(
-            "Provide either SERVICE_ACCOUNT_JSON or GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REFRESH_TOKEN"
+            "Provide SERVICE_ACCOUNT_JSON and/or GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/GOOGLE_REFRESH_TOKEN"
         )
 
     # SERVICE_ACCOUNT_JSON accepts either inline JSON or a file path.

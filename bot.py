@@ -136,12 +136,13 @@ async def clone_command(client: Client, message) -> None:
         await progress_msg.edit_text("<code>UNEXPECTED ERROR</code>")
         return
     logger.info(
-        "Clone precheck ok: %s link=%s source_id=%s name=%s mime=%s",
+        "Clone precheck ok: %s link=%s source_id=%s name=%s mime=%s auth=%s",
         ctx,
         source_link,
         precheck.get("source_id"),
         precheck.get("name"),
         precheck.get("source_mime_type"),
+        precheck.get("auth_mode"),
     )
 
     progress = CloneProgress(task_name=precheck.get("name", "Unnamed"))
@@ -182,6 +183,7 @@ async def clone_command(client: Client, message) -> None:
             _run_clone,
             cfg,
             source_link,
+            precheck.get("auth_mode"),
             progress,
             on_progress,
         )
@@ -317,8 +319,8 @@ async def delete_command(client: Client, message) -> None:
 
 
 
-def _run_clone(cfg, source_link: str, progress: CloneProgress, on_progress):
-    cloner = DriveCloner(cfg)
+def _run_clone(cfg, source_link: str, auth_mode: str | None, progress: CloneProgress, on_progress):
+    cloner = DriveCloner(cfg, preferred_auth=auth_mode)
     return cloner.clone(
         source_link=source_link,
         destination_id=cfg.destination_id,
@@ -347,7 +349,7 @@ def _run_delete_prepare(cfg, source_link: str):
 
 
 def _run_delete_commit(cfg, target: dict):
-    cloner = DriveCloner(cfg)
+    cloner = DriveCloner(cfg, preferred_auth=target.get("auth_mode"))
     return cloner.perform_delete(target=target)
 
 

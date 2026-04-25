@@ -61,16 +61,36 @@ def parse_drive_link(link: str) -> ParsedDriveLink:
 
 
 class DriveCloner:
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, preferred_auth: Optional[str] = None) -> None:
         self.config = config
-        self.service = self._build_service(config)
+        self._services = {}
+        self._auth_order = self._available_auth_modes(config)
+        if preferred_auth:
+            if preferred_auth not in self._auth_order:
+                raise DriveCloneError(f"Configured Google auth is missing: {preferred_auth}")
+            self._auth_order = [preferred_auth]
+        self.auth_mode = self._auth_order[0]
+        self.service = self._get_service(self.auth_mode)
 
-    def _build_service(self, config: BotConfig):
+    def _available_auth_modes(self, config: BotConfig) -> list[str]:
+        modes = []
         if config.service_account_json:
+            modes.append("service_account")
+        if config.google_client_id and config.google_client_secret and config.google_refresh_token:
+            modes.append("oauth")
+        return modes
+
+    def _get_service(self, auth_mode: str):
+        if auth_mode not in self._services:
+            self._services[auth_mode] = self._build_service(self.config, auth_mode)
+        return self._services[auth_mode]
+
+    def _build_service(self, config: BotConfig, auth_mode: str):
+        if auth_mode == "service_account":
             creds = service_account.Credentials.from_service_account_info(
                 eval_json(config.service_account_json), scopes=SCOPES
             )
-        else:
+        elif auth_mode == "oauth":
             creds = UserCredentials(
                 token=None,
                 refresh_token=config.google_refresh_token,
@@ -80,8 +100,41 @@ class DriveCloner:
                 scopes=SCOPES,
             )
             creds.refresh(Request())
+        else:
+            raise DriveCloneError(f"Unknown Google auth mode: {auth_mode}")
 
         return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    def _with_auth_fallback(self, operation: Callable[[], dict]) -> dict:
+        last_exc = None
+        for auth_mode in self._auth_order:
+            self.auth_mode = auth_mode
+            self.service = self._get_service(auth_mode)
+            try:
+                return operation()
+            except DriveDuplicateError:
+                raise
+            except DriveCloneError as exc:
+                if not self._should_try_next_auth(exc):
+                    raise
+                last_exc = exc
+            except HttpError as exc:
+                if not self._should_try_next_auth(exc):
+                    raise
+                last_exc = exc
+        if last_exc:
+            raise last_exc
+        raise DriveCloneError("No Google auth method is configured")
+
+    def _should_try_next_auth(self, exc: Exception) -> bool:
+        if self.auth_mode == self._auth_order[-1]:
+            return False
+        if isinstance(exc, HttpError):
+            return getattr(exc.resp, "status", None) in (403, 404)
+        if isinstance(exc, DriveCloneError):
+            msg = str(exc).upper()
+            return "YOU DON'T HAVE PERMS" in msg or "FILE DOESN'T EXIST" in msg or "NOT FOUND" in msg
+        return False
 
     def _files_get(self, file_id: str, fields: str, resource_key: Optional[str] = None):
         kwargs = {
@@ -105,6 +158,9 @@ class DriveCloner:
             raise
 
     def prepare_clone(self, source_link: str, destination_id: str) -> dict:
+        return self._with_auth_fallback(lambda: self._prepare_clone(source_link, destination_id))
+
+    def _prepare_clone(self, source_link: str, destination_id: str) -> dict:
         parsed = parse_drive_link(source_link)
         try:
             src_meta = self._files_get_with_fallback(
@@ -155,6 +211,7 @@ class DriveCloner:
             "name": src_meta.get("name", "Unnamed"),
             "source_id": src_meta.get("id"),
             "source_mime_type": src_meta.get("mimeType"),
+            "auth_mode": self.auth_mode,
         }
 
     def _files_copy(self, source_id: str, name: str, parent_id: str, resource_key: Optional[str] = None):
@@ -267,6 +324,17 @@ class DriveCloner:
         progress: CloneProgress,
         progress_cb: Callable[[CloneProgress, bool], None],
     ) -> dict:
+        return self._with_auth_fallback(
+            lambda: self._clone(source_link, destination_id, progress, progress_cb)
+        )
+
+    def _clone(
+        self,
+        source_link: str,
+        destination_id: str,
+        progress: CloneProgress,
+        progress_cb: Callable[[CloneProgress, bool], None],
+    ) -> dict:
         parsed = parse_drive_link(source_link)
 
         try:
@@ -363,6 +431,9 @@ class DriveCloner:
         return self.perform_delete(target)
 
     def prepare_delete(self, source_link: str) -> dict:
+        return self._with_auth_fallback(lambda: self._prepare_delete(source_link))
+
+    def _prepare_delete(self, source_link: str) -> dict:
         parsed = parse_drive_link(source_link)
         try:
             src_meta = self._files_get_with_fallback(
@@ -393,6 +464,7 @@ class DriveCloner:
             "name": src_meta.get("name", "Unnamed"),
             "mimeType": src_meta.get("mimeType"),
             "mode": mode,
+            "auth_mode": self.auth_mode,
         }
 
     def perform_delete(self, target: dict) -> dict:
