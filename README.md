@@ -61,6 +61,7 @@ cp .env.example .env
 - `TELEGRAM_API_ID`: Telegram API ID from `my.telegram.org/apps`
 - `TELEGRAM_API_HASH`: Telegram API hash from `my.telegram.org/apps`
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from BotFather
+- `OWNER_ID`: your Telegram numeric user ID; commands from any other user are rejected
 - `GOOGLE_DRIVE_DESTINATION_ID`: destination folder ID (inside My Drive or Shared Drive)
 - Auth:
   - `SERVICE_ACCOUNT_JSON` as inline JSON or path to JSON file
@@ -114,6 +115,8 @@ In Telegram:
 /n https://drive.google.com/file/d/xxxx/view
 /n https://drive.google.com/drive/folders/xxxx
 ```
+
+Only the Telegram user configured as `OWNER_ID` can use the bot commands. You can get your numeric Telegram user ID from bots such as `@userinfobot`.
 
 ## Permissions Notes
 

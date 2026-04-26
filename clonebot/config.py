@@ -17,6 +17,7 @@ class BotConfig:
     telegram_api_id: int
     telegram_api_hash: str
     telegram_bot_token: str
+    owner_id: int
     destination_id: str
     service_account_json: Optional[str]
     google_client_id: Optional[str]
@@ -39,6 +40,7 @@ def load_config() -> BotConfig:
     telegram_api_id_raw = _clean(os.getenv("TELEGRAM_API_ID"))
     telegram_api_hash = _clean(os.getenv("TELEGRAM_API_HASH"))
     telegram_bot_token = _clean(os.getenv("TELEGRAM_BOT_TOKEN"))
+    owner_id_raw = _clean(os.getenv("OWNER_ID"))
     destination_id = _clean(os.getenv("GOOGLE_DRIVE_DESTINATION_ID"))
 
     service_account_json = _clean(os.getenv("SERVICE_ACCOUNT_JSON"))
@@ -52,6 +54,8 @@ def load_config() -> BotConfig:
         raise ConfigError("Missing TELEGRAM_API_HASH in .env")
     if not telegram_bot_token:
         raise ConfigError("Missing TELEGRAM_BOT_TOKEN in .env")
+    if not owner_id_raw:
+        raise ConfigError("Missing OWNER_ID in .env")
     if not destination_id:
         raise ConfigError("Missing GOOGLE_DRIVE_DESTINATION_ID in .env")
 
@@ -59,6 +63,11 @@ def load_config() -> BotConfig:
         telegram_api_id = int(telegram_api_id_raw)
     except ValueError as exc:
         raise ConfigError("TELEGRAM_API_ID must be an integer") from exc
+
+    try:
+        owner_id = int(owner_id_raw)
+    except ValueError as exc:
+        raise ConfigError("OWNER_ID must be a Telegram numeric user ID") from exc
 
     has_service_account = bool(service_account_json)
     has_oauth = all([google_client_id, google_client_secret, google_refresh_token])
@@ -85,6 +94,7 @@ def load_config() -> BotConfig:
         telegram_api_id=telegram_api_id,
         telegram_api_hash=telegram_api_hash,
         telegram_bot_token=telegram_bot_token,
+        owner_id=owner_id,
         destination_id=destination_id,
         service_account_json=service_account_json,
         google_client_id=google_client_id,

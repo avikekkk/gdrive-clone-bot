@@ -84,15 +84,35 @@ def _message_context(message) -> str:
     return f"chat_id={chat_id} user_id={user_id} username={username}"
 
 
+def _is_owner(client: Client, message) -> bool:
+    user = getattr(message, "from_user", None)
+    user_id = getattr(user, "id", None)
+    return user_id == client.clonebot_config.owner_id
+
+
+async def _reject_non_owner(client: Client, message) -> bool:
+    if _is_owner(client, message):
+        return False
+    logger.warning("Unauthorized command rejected: %s", _message_context(message))
+    await message.reply_text("<code>UNAUTHORIZED</code>")
+    return True
+
+
 async def start_command(client: Client, message) -> None:
+    if await _reject_non_owner(client, message):
+        return
     await message.reply_text(HELP_TEXT)
 
 
 async def help_command(client: Client, message) -> None:
+    if await _reject_non_owner(client, message):
+        return
     await message.reply_text(HELP_TEXT)
 
 
 async def clone_command(client: Client, message) -> None:
+    if await _reject_non_owner(client, message):
+        return
     ctx = _message_context(message)
     source_link = _extract_source_link(message)
     if not source_link:
@@ -250,6 +270,8 @@ async def clone_command(client: Client, message) -> None:
 
 
 async def delete_command(client: Client, message) -> None:
+    if await _reject_non_owner(client, message):
+        return
     ctx = _message_context(message)
     source_link = _extract_source_link(message)
     if not source_link:
