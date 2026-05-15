@@ -100,7 +100,7 @@ class CloneProgress:
         safe_size = html.escape(_fmt_bytes(self.copied_bytes))
         safe_url = html.escape(output_url, quote=True)
         return (
-            "<code>CLONED:</code>\n"
+            "<u><b>CLONED:</b></u>\n"
             f"<code>{safe_name}</code>\n"
             f"<code>{safe_size} • </code>"
             f"<a href=\"{safe_url}\"><b>DL</b></a>"

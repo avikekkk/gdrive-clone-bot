@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from google.auth.exceptions import RefreshError
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as UserCredentials
 from google.auth.transport.requests import Request
@@ -18,6 +19,8 @@ DRIVE_FILE_MIME = "application/vnd.google-apps.file"
 DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+SERVICE_ACCOUNT_AUTH_PREFIX = "service_account:"
+OAUTH_AUTH_PREFIX = "oauth:"
 
 
 class DriveCloneError(RuntimeError):
@@ -70,14 +73,14 @@ class DriveCloner:
                 raise DriveCloneError(f"Configured Google auth is missing: {preferred_auth}")
             self._auth_order = [preferred_auth]
         self.auth_mode = self._auth_order[0]
-        self.service = self._get_service(self.auth_mode)
+        self.service = None
 
     def _available_auth_modes(self, config: BotConfig) -> list[str]:
         modes = []
-        if config.service_account_json:
-            modes.append("service_account")
-        if config.google_client_id and config.google_client_secret and config.google_refresh_token:
-            modes.append("oauth")
+        for idx, _entry in enumerate(config.service_account_jsons, start=1):
+            modes.append(f"{SERVICE_ACCOUNT_AUTH_PREFIX}{idx}")
+        for idx, _entry in enumerate(config.google_oauth_credentials, start=1):
+            modes.append(f"{OAUTH_AUTH_PREFIX}{idx}")
         return modes
 
     def _get_service(self, auth_mode: str):
@@ -86,17 +89,19 @@ class DriveCloner:
         return self._services[auth_mode]
 
     def _build_service(self, config: BotConfig, auth_mode: str):
-        if auth_mode == "service_account":
+        if auth_mode == "service_account" or auth_mode.startswith(SERVICE_ACCOUNT_AUTH_PREFIX):
+            service_account_json = self._service_account_json_for_mode(config, auth_mode)
             creds = service_account.Credentials.from_service_account_info(
-                eval_json(config.service_account_json), scopes=SCOPES
+                eval_json(service_account_json), scopes=SCOPES
             )
-        elif auth_mode == "oauth":
+        elif auth_mode == "oauth" or auth_mode.startswith(OAUTH_AUTH_PREFIX):
+            oauth_credentials = self._oauth_credentials_for_mode(config, auth_mode)
             creds = UserCredentials(
                 token=None,
-                refresh_token=config.google_refresh_token,
+                refresh_token=oauth_credentials.refresh_token,
                 token_uri="https://oauth2.googleapis.com/token",
-                client_id=config.google_client_id,
-                client_secret=config.google_client_secret,
+                client_id=oauth_credentials.client_id,
+                client_secret=oauth_credentials.client_secret,
                 scopes=SCOPES,
             )
             creds.refresh(Request())
@@ -105,12 +110,42 @@ class DriveCloner:
 
         return build("drive", "v3", credentials=creds, cache_discovery=False)
 
+    def _service_account_json_for_mode(self, config: BotConfig, auth_mode: str) -> str:
+        if auth_mode == "service_account":
+            if not config.service_account_jsons:
+                raise DriveCloneError("No service account is configured")
+            return config.service_account_jsons[0]
+
+        try:
+            idx = int(auth_mode.removeprefix(SERVICE_ACCOUNT_AUTH_PREFIX)) - 1
+        except ValueError as exc:
+            raise DriveCloneError(f"Unknown Google auth mode: {auth_mode}") from exc
+
+        if idx < 0 or idx >= len(config.service_account_jsons):
+            raise DriveCloneError(f"Unknown Google auth mode: {auth_mode}")
+        return config.service_account_jsons[idx]
+
+    def _oauth_credentials_for_mode(self, config: BotConfig, auth_mode: str):
+        if auth_mode == "oauth":
+            if not config.google_oauth_credentials:
+                raise DriveCloneError("No OAuth credentials are configured")
+            return config.google_oauth_credentials[0]
+
+        try:
+            idx = int(auth_mode.removeprefix(OAUTH_AUTH_PREFIX)) - 1
+        except ValueError as exc:
+            raise DriveCloneError(f"Unknown Google auth mode: {auth_mode}") from exc
+
+        if idx < 0 or idx >= len(config.google_oauth_credentials):
+            raise DriveCloneError(f"Unknown Google auth mode: {auth_mode}")
+        return config.google_oauth_credentials[idx]
+
     def _with_auth_fallback(self, operation: Callable[[], dict]) -> dict:
         last_exc = None
         for auth_mode in self._auth_order:
             self.auth_mode = auth_mode
-            self.service = self._get_service(auth_mode)
             try:
+                self.service = self._get_service(auth_mode)
                 return operation()
             except DriveDuplicateError:
                 raise
@@ -122,6 +157,11 @@ class DriveCloner:
                 if not self._should_try_next_auth(exc):
                     raise
                 last_exc = exc
+            except RefreshError as exc:
+                auth_exc = DriveCloneError("Google auth failed. Check the configured credentials.")
+                if not self._should_try_next_auth(auth_exc):
+                    raise auth_exc from exc
+                last_exc = auth_exc
         if last_exc:
             raise last_exc
         raise DriveCloneError("No Google auth method is configured")
@@ -133,7 +173,12 @@ class DriveCloner:
             return getattr(exc.resp, "status", None) in (403, 404)
         if isinstance(exc, DriveCloneError):
             msg = str(exc).upper()
-            return "YOU DON'T HAVE PERMS" in msg or "FILE DOESN'T EXIST" in msg or "NOT FOUND" in msg
+            return (
+                "YOU DON'T HAVE PERMS" in msg
+                or "FILE DOESN'T EXIST" in msg
+                or "NOT FOUND" in msg
+                or "GOOGLE AUTH FAILED" in msg
+            )
         return False
 
     def _files_get(self, file_id: str, fields: str, resource_key: Optional[str] = None):
@@ -170,7 +215,7 @@ class DriveCloner:
             )
         except HttpError as exc:
             if getattr(exc.resp, "status", None) == 404:
-                raise DriveCloneError("FILE DOESN'T EXIST") from exc
+                raise DriveCloneError("FILE NOT FOUND OR NOT SHARED") from exc
             if getattr(exc.resp, "status", None) == 403:
                 raise DriveCloneError("YOU DON'T HAVE PERMS") from exc
             raise normalize_http_error(exc) from exc
@@ -266,6 +311,96 @@ class DriveCloner:
         ).execute()
         files = resp.get("files", [])
         return files[0] if files else None
+
+    def search(self, query: str, limit: int = 10, item_type: str = "files") -> list[dict]:
+        query = query.strip()
+        if not query:
+            raise DriveCloneError("Search query is required")
+        if item_type not in ("files", "folders", "all"):
+            raise DriveCloneError("Invalid search type")
+
+        results = []
+        seen_ids = set()
+        last_exc = None
+        per_auth_limit = max(limit, 1)
+
+        for auth_mode in self._auth_order:
+            self.auth_mode = auth_mode
+            try:
+                self.service = self._get_service(auth_mode)
+                for item in self._search_all_shared_drives_with_active_service(
+                    query,
+                    per_auth_limit,
+                    item_type,
+                ):
+                    item_id = item.get("id")
+                    if not item_id or item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                    self._attach_search_size(item)
+                    item["url"] = self._drive_url_for(item)
+                    item["auth_mode"] = auth_mode
+                    results.append(item)
+            except RefreshError as exc:
+                last_exc = DriveCloneError("Google auth failed. Check the configured credentials.")
+                continue
+            except HttpError as exc:
+                last_exc = normalize_http_error(exc)
+                continue
+
+        if results:
+            return sorted(results, key=_search_sort_size, reverse=True)[:limit]
+        if last_exc:
+            raise last_exc
+        return []
+
+    def _search_all_shared_drives_with_active_service(
+        self,
+        query: str,
+        limit: int,
+        item_type: str,
+    ) -> list[dict]:
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
+        query_parts = [f"name contains '{escaped_query}'", "trashed=false"]
+        if item_type == "files":
+            query_parts.append(f"mimeType != '{DRIVE_FOLDER_MIME}'")
+        elif item_type == "folders":
+            query_parts.append(f"mimeType = '{DRIVE_FOLDER_MIME}'")
+
+        list_kwargs = {
+            "q": " and ".join(query_parts),
+            "fields": "files(id,name,size,mimeType,webViewLink,modifiedTime,driveId,quotaBytesUsed)",
+            "corpora": "allDrives",
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+            "pageSize": limit,
+            "orderBy": "quotaBytesUsed desc",
+        }
+
+        try:
+            resp = self.service.files().list(**list_kwargs).execute()
+        except HttpError as exc:
+            if getattr(exc.resp, "status", None) != 400:
+                raise
+            list_kwargs.pop("orderBy", None)
+            resp = self.service.files().list(**list_kwargs).execute()
+
+        return [item for item in resp.get("files", []) if item.get("driveId")]
+
+    def _attach_search_size(self, item: dict) -> None:
+        if item.get("size") is not None:
+            item["computed_size"] = int(item.get("size") or 0)
+            return
+        if item.get("mimeType") != DRIVE_FOLDER_MIME:
+            return
+
+        try:
+            total_bytes, total_files = self._scan_folder(item["id"])
+        except HttpError:
+            return
+
+        item["computed_size"] = total_bytes
+        item["computed_files"] = total_files
 
     def _drive_url_for(self, item: dict) -> str:
         if item.get("webViewLink"):
@@ -456,7 +591,7 @@ class DriveCloner:
                 raise DriveCloneError("YOU DON'T HAVE PERMS")
         except HttpError as exc:
             if getattr(exc.resp, "status", None) == 404:
-                raise DriveCloneError("FILE DOESN'T EXIST") from exc
+                raise DriveCloneError("FILE NOT FOUND OR NOT SHARED") from exc
             raise normalize_http_error(exc) from exc
 
         return {
@@ -469,6 +604,7 @@ class DriveCloner:
 
     def perform_delete(self, target: dict) -> dict:
         try:
+            self.service = self._get_service(self.auth_mode)
             if target["mode"] == "delete":
                 self.service.files().delete(
                     fileId=target["id"],
@@ -485,10 +621,12 @@ class DriveCloner:
                 action = "trashed"
         except HttpError as exc:
             if getattr(exc.resp, "status", None) == 404:
-                raise DriveCloneError("FILE DOESN'T EXIST") from exc
+                raise DriveCloneError("FILE NOT FOUND OR NOT SHARED") from exc
             if getattr(exc.resp, "status", None) == 403:
                 raise DriveCloneError("YOU DON'T HAVE PERMS") from exc
             raise normalize_http_error(exc) from exc
+        except RefreshError as exc:
+            raise DriveCloneError("Google auth failed. Check the configured credentials.") from exc
 
         item_type = "folder" if target.get("mimeType") == DRIVE_FOLDER_MIME else "file"
         return {
@@ -507,6 +645,13 @@ def eval_json(json_string: str) -> dict:
         return json.load(f)
 
 
+def _search_sort_size(item: dict) -> int:
+    try:
+        return int(item.get("computed_size") or item.get("size") or item.get("quotaBytesUsed") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def normalize_http_error(exc: HttpError) -> DriveCloneError:
     status = getattr(exc.resp, "status", None)
     message = "Google Drive API error"
@@ -516,16 +661,35 @@ def normalize_http_error(exc: HttpError) -> DriveCloneError:
         if reason:
             message = reason
 
+    lower = message.lower()
+
+    if status == 401:
+        return DriveCloneError("Google auth failed. Check the configured credentials.")
     if status == 404:
-        return DriveCloneError("Source item was not found. Verify the link and access permissions.")
+        return DriveCloneError("Source item was not found or is not shared with the active account.")
+    if status == 429:
+        return DriveCloneError("Rate limit exceeded. Wait a bit and retry.")
     if status == 403:
-        lower = message.lower()
-        if "storagequotaexceeded" in lower or "quota" in lower:
+        if (
+            "ratelimitexceeded" in lower
+            or "userratelimitexceeded" in lower
+            or "sharingratelimitexceeded" in lower
+            or "too many requests" in lower
+            or "queries per minute" in lower
+        ):
+            return DriveCloneError("Rate limit exceeded. Wait a bit and retry.")
+        if "dailylimitexceeded" in lower or "daily limit" in lower:
+            return DriveCloneError("Drive API daily limit exceeded. Retry after the quota resets.")
+        if "storagequotaexceeded" in lower or ("storage" in lower and "quota" in lower):
             return DriveCloneError("Destination storage quota exceeded. Free space and retry.")
+        if "cannotcopyfile" in lower or "copying this file is disabled" in lower:
+            return DriveCloneError("Copy is restricted for this file.")
         return DriveCloneError(
-            "Permission denied (403). For private links, share the source with your service account/OAuth user and ensure destination write access."
+            "Permission denied (403). For private links, share the source with your service account(s)/OAuth user and ensure destination write access."
         )
     if status == 400:
         return DriveCloneError(f"Bad request to Drive API: {message}")
+    if status in (500, 502, 503, 504):
+        return DriveCloneError("Google Drive is temporarily unavailable. Retry later.")
 
     return DriveCloneError(f"Drive API error ({status or 'unknown'}): {message}")
