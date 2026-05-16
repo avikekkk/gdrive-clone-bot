@@ -114,18 +114,20 @@ In Telegram:
 ```text
 /c https://drive.google.com/drive/folders/xxxx
 /c https://drive.google.com/file/d/xxxx/view
+/c 1AbCdEfGhIjKlMnOpQrStUvWxYz
 /s movie name
 /s folder name --dir
 /s archive --all
 /n https://drive.google.com/file/d/xxxx/view
 /n https://drive.google.com/drive/folders/xxxx
+/n 1AbCdEfGhIjKlMnOpQrStUvWxYz
 ```
 
 Only the Telegram user configured as `OWNER_ID` can use the bot commands. You can get your numeric Telegram user ID from bots such as `@userinfobot`.
 
 If `AUTHORIZED_CHAT_IDS` includes a group or chat ID, every member in that chat can use `/c`. The `/n` delete command always remains restricted to `OWNER_ID`.
 
-Search uses `/s <query>` or `/search <query>` and searches only Shared Drives visible to the configured Google identities. It does not search My Drive. By default, search returns files only. Use `--dir` at the end for folders only, or `--all` for files and folders. Results are sorted by reported size from largest to smallest and shown 5 per page with `PREV`, `NEXT`, and `CLOSE` buttons. Google Drive does not report recursive folder sizes in search results, so folders may show `Unknown`.
+Search uses `/s <query>` or `/search <query>` and searches only Shared Drives visible to the configured Google identities. It does not search My Drive. By default, search returns files only. Use `--dir` at the end for folders only, or `--all` for files and folders. Results are sorted by reported size from largest to smallest and shown 5 per page with `PREV`, `NEXT`, and `CLOSE` buttons. Search results show the title, size, and a copyable AES-encrypted ID; use that encrypted ID directly with `/c` to clone or `/n` to delete. Google Drive does not report recursive folder sizes in search results, so folders may show `Unknown`.
 
 ## Permissions Notes
 

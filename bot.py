@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import shlex
 import uuid
+from base64 import standard_b64decode, standard_b64encode
+from binascii import Error as BinasciiError
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
+import pyaes
 from pyrogram import Client, enums, filters, types
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from rich.logging import RichHandler
@@ -24,6 +28,8 @@ _LOG_FILE = _LOG_DIR / "clonebot.log"
 SEARCH_RESULTS_PER_PAGE = 5
 MAX_SEARCH_SESSIONS = 100
 SEARCH_SESSIONS = {}
+RAW_DRIVE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{10,}$")
+ID_TOKEN_KEY = b"\x24\xeb\xb1r\x14\xf2\xfe\xa6\x34\n\xc3\xb7\x14\xb7\xe2\xbf\xa8X\xec\\w\xa2\xab\xdb}\xe2D\x96\xc9\xe7/s"
 
 
 def _configure_app_logging() -> None:
@@ -67,9 +73,9 @@ def _configure_library_logging() -> None:
 HELP_TEXT = (
     "Google Drive Cloner Bot\n\n"
     "Commands:\n"
-    "/c <google_drive_file_or_folder_link>  Clone to configured destination\n"
+    "/c <google_drive_file_or_folder_link_or_id_or_token>  Clone to configured destination\n"
     "/s <search_query> [--dir|--all]  Search Shared Drives visible to configured Drive accounts\n"
-    "/n <google_drive_file_or_folder_link>  Delete file/folder by link\n\n"
+    "/n <google_drive_file_or_folder_link_or_id_or_token>  Delete file/folder by link, ID, or token\n\n"
     "Destination is fixed by GOOGLE_DRIVE_DESTINATION_ID from .env."
 )
 
@@ -80,6 +86,29 @@ def _extract_source_link(message) -> Optional[str]:
         return None
     source_link = command[1].strip()
     return source_link or None
+
+
+def _source_for_drive_command(client: Client, message) -> Optional[str]:
+    source = _extract_source_link(message)
+    if not source:
+        return None
+    return _decode_drive_id_token(source) or source
+
+
+def _encode_drive_id_token(file_id: str) -> str:
+    aes_encrypt = pyaes.AESModeOfOperationCTR(ID_TOKEN_KEY)
+    ciphertext = aes_encrypt.encrypt(file_id)
+    return standard_b64encode(ciphertext).decode("ascii")
+
+
+def _decode_drive_id_token(token: str) -> Optional[str]:
+    try:
+        ciphertext = standard_b64decode(token)
+        aes_decrypt = pyaes.AESModeOfOperationCTR(ID_TOKEN_KEY)
+        decrypted = aes_decrypt.decrypt(ciphertext).decode("utf-8")
+    except (BinasciiError, UnicodeDecodeError, ValueError):
+        return None
+    return decrypted if RAW_DRIVE_ID_RE.match(decrypted) else None
 
 
 def _extract_command_payload(message) -> Optional[str]:
@@ -144,9 +173,9 @@ async def clone_command(client: Client, message) -> None:
     if await _reject_unauthorized_clone(client, message):
         return
     ctx = _message_context(message)
-    source_link = _extract_source_link(message)
+    source_link = _source_for_drive_command(client, message)
     if not source_link:
-        await message.reply_text("Usage: /c <google_drive_link>")
+        await message.reply_text("Usage: /c <google_drive_link_or_id_or_token>")
         return
 
     logger.info("Clone requested: %s link=%s", ctx, source_link)
@@ -303,9 +332,9 @@ async def delete_command(client: Client, message) -> None:
     if await _reject_non_owner(client, message):
         return
     ctx = _message_context(message)
-    source_link = _extract_source_link(message)
+    source_link = _source_for_drive_command(client, message)
     if not source_link:
-        await message.reply_text("Usage: /n <google_drive_link>")
+        await message.reply_text("Usage: /n <google_drive_link_or_id_or_token>")
         return
 
     logger.info("Nuke requested: %s link=%s", ctx, source_link)
@@ -574,15 +603,16 @@ def _build_search_page_text(results: list[dict], query: str, page: int) -> tuple
     ]
     for item in page_items:
         safe_name = html.escape(item.get("name", "Unnamed"))
-        safe_url = html.escape(item.get("url", ""), quote=True)
         safe_size = html.escape(_search_item_size(item))
-        if safe_url:
+        item_id = item.get("id", "")
+        safe_token = html.escape(_encode_drive_id_token(item_id) if item_id else "")
+        if safe_token:
             lines.append(
-                f"<code>{safe_name}</code> • <code>{safe_size}</code> • "
-                f"<a href=\"{safe_url}\"><b>LINK</b></a>\n"
+                f"<code>{safe_name}</code> • {safe_size}\n"
+                f"ID: <code>{safe_token}</code>\n"
             )
         else:
-            lines.append(f"<code>{safe_name}</code> • <code>{safe_size}</code>\n")
+            lines.append(f"<code>{safe_name}</code> • {safe_size}\n")
     return "\n".join(lines), total_pages, page
 
 
@@ -594,6 +624,8 @@ def _search_item_size(item: dict) -> str:
             return "Unknown"
 
     raw_size = item.get("size")
+    if raw_size is None:
+        raw_size = item.get("quotaBytesUsed")
     if raw_size is None:
         return "Unknown"
     try:

@@ -11,6 +11,7 @@ dependencies = [
   "google-api-python-client==2.172.0",
   "google-auth==2.41.1",
   "google-auth-oauthlib==1.2.2",
+  "pyaes",
   "python-dotenv==1.1.0",
 ]
 

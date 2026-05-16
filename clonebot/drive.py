@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -17,10 +18,12 @@ from clonebot.progress import CloneProgress
 
 DRIVE_FILE_MIME = "application/vnd.google-apps.file"
 DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+DRIVE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 SERVICE_ACCOUNT_AUTH_PREFIX = "service_account:"
 OAUTH_AUTH_PREFIX = "oauth:"
+DRIVE_RETRY_ATTEMPTS = 3
 
 
 class DriveCloneError(RuntimeError):
@@ -60,18 +63,19 @@ def parse_drive_link(link: str) -> ParsedDriveLink:
             rkm = RESOURCE_KEY_PATTERN.search(link)
             resource_key = rkm.group(1) if rkm else None
             return ParsedDriveLink(file_id=file_id, resource_key=resource_key)
-    raise DriveCloneError("Invalid Google Drive link. Expected a file or folder URL.")
+    raise DriveCloneError("Invalid Google Drive link or ID. Expected a file/folder URL or Drive ID.")
 
 
 class DriveCloner:
     def __init__(self, config: BotConfig, preferred_auth: Optional[str] = None) -> None:
         self.config = config
         self._services = {}
+        self._preferred_auth = preferred_auth
         self._auth_order = self._available_auth_modes(config)
         if preferred_auth:
             if preferred_auth not in self._auth_order:
                 raise DriveCloneError(f"Configured Google auth is missing: {preferred_auth}")
-            self._auth_order = [preferred_auth]
+            self._auth_order = [preferred_auth, *(mode for mode in self._auth_order if mode != preferred_auth)]
         self.auth_mode = self._auth_order[0]
         self.service = None
 
@@ -87,6 +91,20 @@ class DriveCloner:
         if auth_mode not in self._services:
             self._services[auth_mode] = self._build_service(self.config, auth_mode)
         return self._services[auth_mode]
+
+    def _execute(self, request):
+        last_exc = None
+        for attempt in range(DRIVE_RETRY_ATTEMPTS):
+            try:
+                return request.execute()
+            except HttpError as exc:
+                if not _is_retryable_http_error(exc) or attempt == DRIVE_RETRY_ATTEMPTS - 1:
+                    raise
+                last_exc = exc
+            time.sleep(min(6, 2 * (attempt + 1)))
+        if last_exc:
+            raise last_exc
+        raise DriveCloneError("Drive API request failed")
 
     def _build_service(self, config: BotConfig, auth_mode: str):
         if auth_mode == "service_account" or auth_mode.startswith(SERVICE_ACCOUNT_AUTH_PREFIX):
@@ -181,6 +199,17 @@ class DriveCloner:
             )
         return False
 
+    def _switch_to_next_auth(self) -> bool:
+        try:
+            current_index = self._auth_order.index(self.auth_mode)
+        except ValueError:
+            return False
+        if current_index >= len(self._auth_order) - 1:
+            return False
+        self.auth_mode = self._auth_order[current_index + 1]
+        self.service = self._get_service(self.auth_mode)
+        return True
+
     def _files_get(self, file_id: str, fields: str, resource_key: Optional[str] = None):
         kwargs = {
             "fileId": file_id,
@@ -189,7 +218,7 @@ class DriveCloner:
         }
         if resource_key:
             kwargs["resourceKey"] = resource_key
-        return self.service.files().get(**kwargs).execute()
+        return self._execute(self.service.files().get(**kwargs))
 
     def _files_get_with_fallback(self, file_id: str, fields: str, resource_key: Optional[str] = None):
         try:
@@ -202,6 +231,68 @@ class DriveCloner:
                 return self._files_get(file_id=file_id, fields=fields, resource_key=None)
             raise
 
+    def get_file_metadata(self, source_link: str) -> dict:
+        return self._with_auth_fallback(lambda: self._get_file_metadata(source_link))
+
+    def _get_file_metadata(self, source_link: str) -> dict:
+        parsed = parse_drive_link(source_link)
+        try:
+            return self._files_get_with_fallback(
+                parsed.file_id,
+                "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed",
+                resource_key=parsed.resource_key,
+            )
+        except HttpError as exc:
+            raise normalize_http_error(exc) from exc
+
+    def list_folder_children(self, folder_id: str, item_type: str = "all") -> list[dict]:
+        if item_type not in ("all", "files", "folders"):
+            raise DriveCloneError("Invalid folder listing type")
+        return self._with_auth_fallback(lambda: self._list_children(folder_id, item_type=item_type))
+
+    def set_anyone_reader_permission(self, file_id: str) -> dict:
+        return self._with_auth_fallback(lambda: self._set_anyone_reader_permission(file_id))
+
+    def _set_anyone_reader_permission(self, file_id: str) -> dict:
+        try:
+            return self._execute(
+                self.service.permissions().create(
+                    fileId=file_id,
+                    body={"role": "reader", "type": "anyone"},
+                    supportsAllDrives=True,
+                    fields="id",
+                )
+            )
+        except HttpError as exc:
+            raise normalize_http_error(exc) from exc
+
+    def count(self, source_link: str) -> dict:
+        return self._with_auth_fallback(lambda: self._count(source_link))
+
+    def _count(self, source_link: str) -> dict:
+        meta = self._get_file_metadata(source_link)
+        if meta.get("trashed"):
+            raise DriveCloneError("FILE DOESN'T EXIST")
+        meta = self._resolve_shortcut(meta)
+        if meta.get("mimeType") == DRIVE_FOLDER_MIME:
+            total_bytes, total_files, total_folders = self._scan_folder_stats(meta["id"])
+            return {
+                "id": meta["id"],
+                "name": meta.get("name", "Unnamed"),
+                "mime_type": DRIVE_FOLDER_MIME,
+                "size": total_bytes,
+                "files": total_files,
+                "folders": total_folders,
+            }
+        return {
+            "id": meta["id"],
+            "name": meta.get("name", "Unnamed"),
+            "mime_type": meta.get("mimeType") or DRIVE_FILE_MIME,
+            "size": _drive_item_size(meta),
+            "files": 1,
+            "folders": 0,
+        }
+
     def prepare_clone(self, source_link: str, destination_id: str) -> dict:
         return self._with_auth_fallback(lambda: self._prepare_clone(source_link, destination_id))
 
@@ -210,7 +301,7 @@ class DriveCloner:
         try:
             src_meta = self._files_get_with_fallback(
                 parsed.file_id,
-                "id,name,size,mimeType,webViewLink,resourceKey,trashed",
+                "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed",
                 resource_key=parsed.resource_key,
             )
         except HttpError as exc:
@@ -220,6 +311,9 @@ class DriveCloner:
                 raise DriveCloneError("YOU DON'T HAVE PERMS") from exc
             raise normalize_http_error(exc) from exc
 
+        if src_meta.get("trashed"):
+            raise DriveCloneError("FILE DOESN'T EXIST")
+        src_meta = self._resolve_shortcut(src_meta)
         if src_meta.get("trashed"):
             raise DriveCloneError("FILE DOESN'T EXIST")
 
@@ -268,7 +362,12 @@ class DriveCloner:
         }
         if resource_key:
             kwargs["resourceKey"] = resource_key
-        return self.service.files().copy(**kwargs).execute()
+        while True:
+            try:
+                return self._execute(self.service.files().copy(**kwargs))
+            except HttpError as exc:
+                if not _is_copy_auth_rotation_error(exc) or not self._switch_to_next_auth():
+                    raise
 
     def _create_folder(self, name: str, parent_id: str):
         body = {
@@ -276,24 +375,36 @@ class DriveCloner:
             "mimeType": DRIVE_FOLDER_MIME,
             "parents": [parent_id],
         }
-        return self.service.files().create(
-            body=body,
-            supportsAllDrives=True,
-            fields="id,name,webViewLink",
-        ).execute()
+        return self._execute(
+            self.service.files().create(
+                body=body,
+                supportsAllDrives=True,
+                fields="id,name,webViewLink",
+            )
+        )
 
-    def _list_children(self, folder_id: str):
+    def _list_children(self, folder_id: str, item_type: str = "all"):
         children = []
         page_token = None
+        query_parts = [f"'{folder_id}' in parents", "trashed=false"]
+        if item_type == "files":
+            query_parts.append(f"mimeType != '{DRIVE_FOLDER_MIME}'")
+        elif item_type == "folders":
+            query_parts.append(f"mimeType = '{DRIVE_FOLDER_MIME}'")
         while True:
             resp = self.service.files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
-                fields="nextPageToken, files(id,name,size,mimeType,resourceKey)",
+                q=" and ".join(query_parts),
+                fields=(
+                    "nextPageToken, "
+                    "files(id,name,size,mimeType,quotaBytesUsed,resourceKey,shortcutDetails)"
+                ),
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
                 pageToken=page_token,
                 pageSize=1000,
-            ).execute()
+                orderBy="folder, name",
+            )
+            resp = self._execute(resp)
             children.extend(resp.get("files", []))
             page_token = resp.get("nextPageToken")
             if not page_token:
@@ -301,14 +412,15 @@ class DriveCloner:
         return children
 
     def _find_child_by_name(self, parent_id: str, name: str) -> Optional[dict]:
-        escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
+        escaped_name = _escape_drive_query_value(name)
         resp = self.service.files().list(
             q=f"'{parent_id}' in parents and trashed=false and name='{escaped_name}'",
             fields="files(id,name,mimeType,webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
             pageSize=1,
-        ).execute()
+        )
+        resp = self._execute(resp)
         files = resp.get("files", [])
         return files[0] if files else None
 
@@ -336,8 +448,11 @@ class DriveCloner:
                     item_id = item.get("id")
                     if not item_id or item_id in seen_ids:
                         continue
-                    seen_ids.add(item_id)
                     self._attach_search_size(item)
+                    item_id = item.get("id")
+                    if not item_id or item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
                     item["url"] = self._drive_url_for(item)
                     item["auth_mode"] = auth_mode
                     results.append(item)
@@ -360,47 +475,121 @@ class DriveCloner:
         limit: int,
         item_type: str,
     ) -> list[dict]:
-        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
-        query_parts = [f"name contains '{escaped_query}'", "trashed=false"]
+        query_terms = [_escape_drive_query_value(term) for term in query.split() if term]
+        if not query_terms:
+            query_terms = [_escape_drive_query_value(query)]
+        query_parts = [*(f"name contains '{term}'" for term in query_terms), "trashed=false"]
         if item_type == "files":
             query_parts.append(f"mimeType != '{DRIVE_FOLDER_MIME}'")
         elif item_type == "folders":
             query_parts.append(f"mimeType = '{DRIVE_FOLDER_MIME}'")
 
-        list_kwargs = {
-            "q": " and ".join(query_parts),
-            "fields": "files(id,name,size,mimeType,webViewLink,modifiedTime,driveId,quotaBytesUsed)",
-            "corpora": "allDrives",
-            "supportsAllDrives": True,
-            "includeItemsFromAllDrives": True,
-            "pageSize": limit,
-            "orderBy": "quotaBytesUsed desc",
-        }
+        results = []
+        for drive in self._list_shared_drives():
+            list_kwargs = {
+                "q": " and ".join(query_parts),
+                "fields": (
+                    "files(id,name,size,mimeType,webViewLink,modifiedTime,driveId,"
+                    "quotaBytesUsed,resourceKey,shortcutDetails)"
+                ),
+                "corpora": "drive",
+                "driveId": drive["id"],
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "pageSize": limit,
+                "orderBy": "quotaBytesUsed desc",
+            }
 
-        try:
-            resp = self.service.files().list(**list_kwargs).execute()
-        except HttpError as exc:
-            if getattr(exc.resp, "status", None) != 400:
-                raise
-            list_kwargs.pop("orderBy", None)
-            resp = self.service.files().list(**list_kwargs).execute()
+            try:
+                resp = self._execute(self.service.files().list(**list_kwargs))
+            except HttpError as exc:
+                if getattr(exc.resp, "status", None) != 400:
+                    raise
+                list_kwargs.pop("orderBy", None)
+                resp = self._execute(self.service.files().list(**list_kwargs))
 
-        return [item for item in resp.get("files", []) if item.get("driveId")]
+            for item in resp.get("files", []):
+                item["driveId"] = item.get("driveId") or drive["id"]
+                item["driveName"] = drive.get("name")
+                results.append(item)
+
+        return results
+
+    def _list_shared_drives(self) -> list[dict]:
+        drives = []
+        page_token = None
+        while True:
+            resp = self._execute(
+                self.service.drives().list(
+                    pageSize=100,
+                    pageToken=page_token,
+                    fields="nextPageToken, drives(id,name)",
+                )
+            )
+            drives.extend(resp.get("drives", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return drives
+
 
     def _attach_search_size(self, item: dict) -> None:
-        if item.get("size") is not None:
-            item["computed_size"] = int(item.get("size") or 0)
+        if item.get("mimeType") == DRIVE_SHORTCUT_MIME:
+            target = self._resolve_shortcut(item, try_all_auth=True)
+            if target is not item:
+                item["id"] = target.get("id") or item.get("id")
+                item["name"] = target.get("name") or item.get("name")
+                item["mimeType"] = target.get("mimeType") or item.get("mimeType")
+                item["webViewLink"] = target.get("webViewLink") or item.get("webViewLink")
+                item["size"] = target.get("size")
+                item["quotaBytesUsed"] = target.get("quotaBytesUsed")
+                item["resourceKey"] = target.get("resourceKey")
+                item["computed_size"] = _drive_item_size(target)
+                return
+            details = item.get("shortcutDetails") or {}
+            if details.get("targetId"):
+                item["id"] = details["targetId"]
+                item["mimeType"] = details.get("targetMimeType") or item.get("mimeType")
+            item.pop("size", None)
+            item.pop("quotaBytesUsed", None)
+            item.pop("computed_size", None)
             return
+
+        if item.get("size") is not None or item.get("quotaBytesUsed") is not None:
+            size = _drive_item_size(item)
+            if size > 0 or item.get("mimeType") == DRIVE_FOLDER_MIME:
+                item["computed_size"] = size
+                return
+
+            refreshed = self._refresh_search_item_metadata(item)
+            if refreshed:
+                item["computed_size"] = _drive_item_size(refreshed)
+                return
+
         if item.get("mimeType") != DRIVE_FOLDER_MIME:
             return
 
         try:
-            total_bytes, total_files = self._scan_folder(item["id"])
+            total_bytes, total_files, total_folders = self._scan_folder_stats(item["id"])
         except HttpError:
             return
 
         item["computed_size"] = total_bytes
         item["computed_files"] = total_files
+        item["computed_folders"] = total_folders
+
+    def _refresh_search_item_metadata(self, item: dict) -> Optional[dict]:
+        item_id = item.get("id")
+        if not item_id:
+            return None
+        try:
+            return self._files_get_with_fallback(
+                item_id,
+                "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed",
+                resource_key=item.get("resourceKey"),
+            )
+        except HttpError:
+            return None
 
     def _drive_url_for(self, item: dict) -> str:
         if item.get("webViewLink"):
@@ -410,19 +599,26 @@ class DriveCloner:
         return f"https://drive.google.com/file/d/{item['id']}/view"
 
     def _scan_folder(self, folder_id: str) -> tuple[int, int]:
+        total_bytes, total_files, _total_folders = self._scan_folder_stats(folder_id)
+        return total_bytes, total_files
+
+    def _scan_folder_stats(self, folder_id: str) -> tuple[int, int, int]:
         total_bytes = 0
         total_files = 0
+        total_folders = 0
         stack = [folder_id]
         while stack:
             current = stack.pop()
             for child in self._list_children(current):
+                child = self._resolve_shortcut(child)
                 mime = child.get("mimeType")
                 if mime == DRIVE_FOLDER_MIME:
+                    total_folders += 1
                     stack.append(child["id"])
                     continue
                 total_files += 1
-                total_bytes += int(child.get("size", 0))
-        return total_bytes, total_files
+                total_bytes += _drive_item_size(child)
+        return total_bytes, total_files, total_folders
 
     def _copy_folder_recursive(
         self,
@@ -432,6 +628,7 @@ class DriveCloner:
         progress_cb: Callable[[CloneProgress, bool], None],
     ) -> None:
         for child in self._list_children(source_folder_id):
+            child = self._resolve_shortcut(child)
             mime = child.get("mimeType")
             if mime == DRIVE_FOLDER_MIME:
                 new_folder = self._create_folder(child["name"], destination_folder_id)
@@ -449,8 +646,41 @@ class DriveCloner:
                 resource_key=child.get("resourceKey"),
             )
             progress.copied_files += 1
-            progress.copied_bytes += int(child.get("size", 0))
+            progress.copied_bytes += _drive_item_size(child)
             progress_cb(progress, False)
+
+    def _resolve_shortcut(self, item: dict, try_all_auth: bool = False) -> dict:
+        if item.get("mimeType") != DRIVE_SHORTCUT_MIME:
+            return item
+        details = item.get("shortcutDetails") or {}
+        target_id = details.get("targetId")
+        if not target_id:
+            return item
+        target = self._get_shortcut_target_metadata(target_id, try_all_auth=try_all_auth)
+        if not target:
+            return item
+        if target.get("trashed"):
+            return item
+        return target
+
+    def _get_shortcut_target_metadata(self, target_id: str, try_all_auth: bool = False) -> Optional[dict]:
+        fields = "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed"
+        original_auth = self.auth_mode
+        original_service = self.service
+        auth_modes = self._auth_order if try_all_auth else [self.auth_mode]
+        for auth_mode in auth_modes:
+            try:
+                self.auth_mode = auth_mode
+                self.service = self._get_service(auth_mode)
+                target = self._files_get_with_fallback(target_id, fields)
+                self.auth_mode = original_auth
+                self.service = original_service
+                return target
+            except (HttpError, RefreshError):
+                continue
+        self.auth_mode = original_auth
+        self.service = original_service
+        return None
 
     def clone(
         self,
@@ -459,6 +689,9 @@ class DriveCloner:
         progress: CloneProgress,
         progress_cb: Callable[[CloneProgress, bool], None],
     ) -> dict:
+        if self._preferred_auth:
+            self.service = self._get_service(self.auth_mode)
+            return self._clone(source_link, destination_id, progress, progress_cb)
         return self._with_auth_fallback(
             lambda: self._clone(source_link, destination_id, progress, progress_cb)
         )
@@ -475,12 +708,15 @@ class DriveCloner:
         try:
             src_meta = self._files_get_with_fallback(
                 parsed.file_id,
-                "id,name,size,mimeType,webViewLink,resourceKey,trashed",
+                "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed",
                 resource_key=parsed.resource_key,
             )
         except HttpError as exc:
             raise normalize_http_error(exc) from exc
 
+        if src_meta.get("trashed"):
+            raise DriveCloneError("FILE DOESN'T EXIST")
+        src_meta = self._resolve_shortcut(src_meta)
         if src_meta.get("trashed"):
             raise DriveCloneError("FILE DOESN'T EXIST")
 
@@ -534,7 +770,7 @@ class DriveCloner:
                     or f"https://drive.google.com/drive/folders/{top_folder['id']}",
                 }
 
-            size = int(src_meta.get("size", 0))
+            size = _drive_item_size(src_meta)
             progress.total_bytes = size
             progress.total_files = 1
             progress.status = f"Copying file: {src_meta['name']}"
@@ -606,18 +842,22 @@ class DriveCloner:
         try:
             self.service = self._get_service(self.auth_mode)
             if target["mode"] == "delete":
-                self.service.files().delete(
-                    fileId=target["id"],
-                    supportsAllDrives=True,
-                ).execute()
+                self._execute(
+                    self.service.files().delete(
+                        fileId=target["id"],
+                        supportsAllDrives=True,
+                    )
+                )
                 action = "deleted"
             else:
-                self.service.files().update(
-                    fileId=target["id"],
-                    supportsAllDrives=True,
-                    body={"trashed": True},
-                    fields="id,trashed",
-                ).execute()
+                self._execute(
+                    self.service.files().update(
+                        fileId=target["id"],
+                        supportsAllDrives=True,
+                        body={"trashed": True},
+                        fields="id,trashed",
+                    )
+                )
                 action = "trashed"
         except HttpError as exc:
             if getattr(exc.resp, "status", None) == 404:
@@ -647,9 +887,84 @@ def eval_json(json_string: str) -> dict:
 
 def _search_sort_size(item: dict) -> int:
     try:
-        return int(item.get("computed_size") or item.get("size") or item.get("quotaBytesUsed") or 0)
+        return int(item.get("computed_size") or _drive_item_size(item))
     except (TypeError, ValueError):
         return 0
+
+
+def _drive_item_size(item: dict) -> int:
+    for field in ("size", "quotaBytesUsed"):
+        value = item.get(field)
+        if value is None:
+            continue
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            continue
+        if size > 0:
+            return size
+    return 0
+
+
+def _escape_drive_query_value(value: str) -> str:
+    escaped = value
+    for char in ("\\", "'"):
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped.strip()
+
+
+def _http_error_reason(exc: HttpError) -> str:
+    content = getattr(exc, "content", b"") or b""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return ""
+
+    error = payload.get("error") or {}
+    errors = error.get("errors") or []
+    if errors and isinstance(errors[0], dict):
+        return str(errors[0].get("reason") or "")
+    return str(error.get("status") or error.get("message") or "")
+
+
+def _is_retryable_http_error(exc: HttpError) -> bool:
+    status = getattr(exc.resp, "status", None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+    if status != 403:
+        return False
+    reason = _http_error_reason(exc).lower()
+    message = ""
+    if hasattr(exc, "_get_reason"):
+        message = (exc._get_reason() or "").lower()
+    retryable = (
+        "ratelimitexceeded",
+        "userratelimitexceeded",
+        "sharingratelimitexceeded",
+        "backenderror",
+        "too many requests",
+        "queries per minute",
+    )
+    return any(token in reason or token in message for token in retryable)
+
+
+def _is_copy_auth_rotation_error(exc: HttpError) -> bool:
+    if getattr(exc.resp, "status", None) != 403:
+        return False
+    reason = _http_error_reason(exc)
+    if not reason and hasattr(exc, "_get_reason"):
+        reason = exc._get_reason() or ""
+    normalized = reason.lower()
+    return any(
+        token in normalized
+        for token in (
+            "userratelimitexceeded",
+            "dailylimitexceeded",
+            "ratelimitexceeded",
+        )
+    )
 
 
 def normalize_http_error(exc: HttpError) -> DriveCloneError:
