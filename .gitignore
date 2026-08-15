@@ -1,20 +1,25 @@
-.venv/
-__pycache__/
-*.pyc
 .env
 .codex
-logs/
-*.log
-*.session
-*.session-journal
-*.sqlite
-*.sqlite3
-*.db
-*.db-journal
 .DS_Store
 
+# Runtime state.
+logs/
+*.log
+*.db
+*.db-journal
+
+# Compiled binaries.
+/clonebot
+/oauthtoken
+
 # Local credentials. Keep .env.example committed, but never commit real secrets.
-mnzvee-c75eae1ce1eb.json
+# Service account and OAuth client files land in the repo root, so ignore every
+# root-level JSON file rather than trying to guess their names.
+/*.json
 service-account*.json
 *service*account*.json
 *credentials*.json
+client_secret*.json
+
+# Reference material, not part of the build.
+/ref/
