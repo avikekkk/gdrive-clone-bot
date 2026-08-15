@@ -9,6 +9,7 @@ logs/
 *.db-journal
 
 # Compiled binaries.
+/bin/
 /clonebot
 /oauthtoken
 

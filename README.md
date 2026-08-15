@@ -35,8 +35,8 @@ A Go Telegram bot that clones Google Drive files/folders to a fixed destination 
 1. Build the binaries:
 
 ```bash
-go build ./cmd/clonebot
-go build ./cmd/oauthtoken
+go build -o bin/clonebot ./cmd/clonebot
+go build -o bin/oauthtoken ./cmd/oauthtoken
 ```
 
 2. Configure environment:
@@ -69,7 +69,7 @@ go run ./cmd/clonebot
 Or run the compiled binary:
 
 ```bash
-./clonebot
+./bin/clonebot
 ```
 
 The bot keeps its Telegram session in memory and re-authenticates from the bot token on every start, so no session file is written.
