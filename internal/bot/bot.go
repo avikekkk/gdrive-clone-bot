@@ -44,8 +44,7 @@ const helpText = "<u><b>BOT COMMANDS</b></u>\n\n" +
 	"<b>✦ Admin only:</b>\n\n" +
 	"  <code>/logs</code>            [bot log file]\n" +
 	"  <code>/auth [id]</code>       [authorize a user or chat]\n" +
-	"  <code>/unauth [id]</code>     [remove authorization]\n" +
-	"  <code>/restart</code>         [restart the bot]"
+	"  <code>/unauth [id]</code>     [remove authorization]"
 
 // Bot holds everything the update handlers need.
 type Bot struct {
@@ -177,8 +176,6 @@ func (b *Bot) onMessage(e tg.Entities, u messageUpdate) error {
 		b.goHandle("unauth", req.handleUnauth)
 	case "server":
 		b.goHandle("server", req.handleServer)
-	case "restart":
-		b.goHandle("restart", req.handleRestart)
 	}
 	return nil
 }

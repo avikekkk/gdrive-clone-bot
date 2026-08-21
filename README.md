@@ -122,14 +122,13 @@ In Telegram:
 /logs
 /auth 123456789
 /unauth 123456789
-/restart
 ```
 
 `/c` and `/n` accept several links, IDs, or search result IDs in one command, separated by spaces, commas, or new lines. The whole command gets a single status message: every item shows up as `QUEUED` with its name, and each block is rewritten in place as that item runs and finishes. At most 6 blocks are shown at once, in a window that follows the item being worked on, with `+N above` and `+N more` counting the rest. Items are processed one at a time. One bad ID does not stop the rest. Duplicates within a command are handled once.
 
-`/server` reports host uptime, disk, CPU, and RAM. `/restart` re-executes the bot binary in place, keeping the same pid.
+`/server` reports host uptime, disk, CPU, and RAM.
 
-Only the Telegram user configured as `OWNER_ID` can use the admin commands (`/logs`, `/auth`, `/unauth`, `/restart`).
+Only the Telegram user configured as `OWNER_ID` can use the admin commands (`/logs`, `/auth`, `/unauth`).
 
 `/c`, `/n`, `/s`, `/server`, and `/help` are additionally available to:
 

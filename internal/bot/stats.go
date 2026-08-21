@@ -96,26 +96,3 @@ func (r *request) systemStats() string {
 
 	return strings.Join(lines, "\n")
 }
-
-// handleRestart re-executes the bot binary in place.
-func (r *request) handleRestart(ctx context.Context) {
-	if r.rejectNonOwner(ctx) {
-		return
-	}
-
-	log := r.bot.log.With("context", r.context())
-	log.Info("Restart requested")
-
-	msgID, err := r.reply(ctx, "Restarting")
-	if err != nil {
-		log.Warn("Failed to post status message", "error", err)
-		return
-	}
-	// Edit before exec: the process is replaced and never gets another chance.
-	r.editLogged(ctx, msgID, "Restarted")
-
-	if err := restartProcess(); err != nil {
-		log.Error("Failed to restart", "error", err)
-		r.editLogged(ctx, msgID, "Restart failed")
-	}
-}
