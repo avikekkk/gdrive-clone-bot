@@ -123,14 +123,14 @@ func (r *request) handleSearch(ctx context.Context) {
 		if errors.As(err, &driveErr) {
 			msg := simpleErrorText(driveErr.Error())
 			log.Warn("Search failed", "reason", msg)
-			r.editLogged(ctx, searchingMsgID, codeBlock(msg))
+			r.editLogged(ctx, searchingMsgID, html.EscapeString(msg))
 			return
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		log.Error("Unhandled search failure", "error", err)
-		r.editLogged(ctx, searchingMsgID, "<code>Unexpected error</code>")
+		r.editLogged(ctx, searchingMsgID, errUnexpected)
 		return
 	}
 
@@ -159,7 +159,7 @@ func (r *request) handleSearch(ctx context.Context) {
 }
 
 // redactedMessage is shown once results are hidden, manually or on a timer.
-const redactedMessage = "<code>RESULTS REDACTED</code>"
+const redactedMessage = "RESULTS REDACTED"
 
 // clearKeyboard removes the inline keyboard from a message. An edit that sends
 // no markup drops the old one; sending an empty ReplyInlineMarkup instead is
@@ -204,10 +204,7 @@ func (r *request) runSearch(ctx context.Context, query, itemType string) ([]*dri
 
 // parseSearchArgs splits the query from a trailing --dir/--all flag.
 func parseSearchArgs(text string) (query, itemType, parseErr string) {
-	args, err := shlexSplit(text)
-	if err != nil {
-		return "", "files", fmt.Sprintf("Invalid search query: %s", err)
-	}
+	args := searchTerms(text)
 
 	dirCount := countArg(args, "--dir")
 	allCount := countArg(args, "--all")
@@ -248,56 +245,21 @@ func countArg(args []string, want string) int {
 	return count
 }
 
-// shlexSplit is a POSIX-style word splitter matching Python's shlex.split for
-// the quoting users actually type into search queries.
-func shlexSplit(text string) ([]string, error) {
-	var (
-		args    []string
-		current strings.Builder
-		quote   rune
-		escaped bool
-		started bool
-	)
-
-	for _, char := range text {
-		switch {
-		case escaped:
-			current.WriteRune(char)
-			escaped = false
-			started = true
-		case quote == 0 && char == '\\':
-			escaped = true
-			started = true
-		case quote == 0 && (char == '\'' || char == '"'):
-			quote = char
-			started = true
-		case quote != 0 && char == quote:
-			quote = 0
-		case quote == 0 && (char == ' ' || char == '\t' || char == '\n' || char == '\r'):
-			if started {
-				args = append(args, current.String())
-				current.Reset()
-				started = false
-			}
-		default:
-			// Backslashes keep their literal meaning inside single quotes.
-			if quote == '\'' || quote == '"' || quote == 0 {
-				current.WriteRune(char)
-				started = true
-			}
+// searchTerms splits a query into words. A search query is prose, not a shell
+// command: "Marvel's Spider-Man 2" has to work, so an apostrophe is just a
+// character and nothing here can fail. Surrounding quotes are trimmed so a
+// user who types "spider man" out of habit still matches, while an internal
+// apostrophe is preserved because Drive matches names literally.
+func searchTerms(text string) []string {
+	var terms []string
+	for _, field := range strings.Fields(text) {
+		field = strings.Trim(field, `'"`)
+		if field == "" {
+			continue
 		}
+		terms = append(terms, field)
 	}
-
-	if escaped {
-		return nil, errors.New("no escaped character")
-	}
-	if quote != 0 {
-		return nil, errors.New("no closing quotation")
-	}
-	if started {
-		args = append(args, current.String())
-	}
-	return args, nil
+	return terms
 }
 
 // buildSearchPageText renders one page of results, clamping the page number.
