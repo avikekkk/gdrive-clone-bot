@@ -58,6 +58,10 @@ type Bot struct {
 	// update processing returns.
 	runCtx context.Context
 
+	// username is this bot's own @name, so a command addressed to another bot
+	// in a group can be left alone.
+	username string
+
 	sessions  *sessionStore
 	auth      *store.Store
 	startedAt time.Time
@@ -118,6 +122,7 @@ func Run(ctx context.Context, cfg *config.Bot, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		b.username = self.Username
 		logger.Info("Bot started", "username", self.Username, "user_id", self.ID)
 
 		<-ctx.Done()
@@ -153,7 +158,7 @@ func (b *Bot) onMessage(e tg.Entities, u messageUpdate) error {
 		return nil
 	}
 
-	command, args, payload, ok := parseCommand(msg.Message)
+	command, args, payload, ok := b.parseCommand(msg.Message)
 	if !ok {
 		return nil
 	}
@@ -181,8 +186,10 @@ func (b *Bot) onMessage(e tg.Entities, u messageUpdate) error {
 	return nil
 }
 
-// parseCommand splits "/cmd@bot arg1 arg2" into its parts.
-func parseCommand(text string) (command string, args []string, payload string, ok bool) {
+// parseCommand splits "/cmd@bot arg1 arg2" into its parts. A command addressed
+// to a different bot is not ours to answer: several bots usually share a group,
+// and "@name" is how a user picks between them.
+func (b *Bot) parseCommand(text string) (command string, args []string, payload string, ok bool) {
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "/") {
 		return "", nil, "", false
@@ -194,8 +201,11 @@ func parseCommand(text string) (command string, args []string, payload string, o
 	}
 
 	command = strings.TrimPrefix(fields[0], "/")
-	if at := strings.Index(command, "@"); at >= 0 {
-		command = command[:at]
+	if name, target, found := strings.Cut(command, "@"); found {
+		if !strings.EqualFold(target, b.username) {
+			return "", nil, "", false
+		}
+		command = name
 	}
 	command = strings.ToLower(command)
 	if command == "" {
