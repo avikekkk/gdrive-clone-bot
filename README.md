@@ -137,6 +137,24 @@ Only the Telegram user configured as `OWNER_ID` can use the admin commands (`/lo
 
 You can get your numeric Telegram user ID from bots such as `@userinfobot`.
 
+### BotFather command menu
+
+To populate the command menu in Telegram clients, send `/setcommands` to [@BotFather](https://t.me/BotFather), pick the bot, and paste:
+
+```text
+start - Show the bot commands
+help - Show the bot commands
+s - [query] search Shared Drives, files only, largest first. Flags: --dir folders only, --all files and folders
+c - [ID-1] [ID-2]... clone from search results. Drive links and raw file IDs work too
+n - [ID-1] [ID-2]... delete a file or folder. Takes the same IDs as /c
+server - System stats
+logs - Bot log file (admin only)
+auth - [id] authorize a user or chat (admin only)
+unauth - [id] remove authorization (admin only)
+```
+
+The admin commands are listed for completeness; non-owners are rejected either way. To keep them out of the public menu, set the shorter list for the "All private chats" scope and the full list for your own chat only.
+
 ## Authorization
 
 ```text
