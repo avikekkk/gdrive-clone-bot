@@ -60,10 +60,18 @@ func TestParseCommand(t *testing.T) {
 		{"/S@MyCloneBot ubuntu", "s", "ubuntu", "ubuntu", true},
 		{"/c", "c", "", "", true},
 		{"/@MyCloneBot", "", "", "", false},
+		// Addressed to a different bot in the group. Answering anyway is how
+		// two bots both replied to a single "/logs@cosmosusenetbot".
+		{"/logs@cosmosusenetbot", "", "", "", false},
+		{"/c@SomeOtherBot 1AbCdEfGhIj", "", "", "", false},
+		// The mention is matched case-insensitively, as Telegram treats it.
+		{"/c@myclonebot 1AbCdEfGhIj", "c", "1AbCdEfGhIj", "1AbCdEfGhIj", true},
 	}
 
+	b := &Bot{username: "MyCloneBot"}
+
 	for _, tc := range cases {
-		command, args, payload, ok := parseCommand(tc.text)
+		command, args, payload, ok := b.parseCommand(tc.text)
 		if ok != tc.wantOK {
 			t.Errorf("parseCommand(%q) ok = %v, want %v", tc.text, ok, tc.wantOK)
 			continue
