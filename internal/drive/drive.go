@@ -31,6 +31,19 @@ const (
 	retryAttempts            = 3
 )
 
+// httpTimeout bounds every individual Drive and token request. Without it a
+// stalled connection blocks the batch loop forever, leaving items on CHECKING.
+// Copies are server-side, so no single request is long-running.
+const httpTimeout = 60 * time.Second
+
+// timeoutClient returns an authenticated client that gives up on a stalled
+// request instead of hanging.
+func timeoutClient(ctx context.Context, source oauth2.TokenSource) *http.Client {
+	client := oauth2.NewClient(ctx, source)
+	client.Timeout = httpTimeout
+	return client
+}
+
 // metaFields is the metadata projection used for source items everywhere.
 const metaFields = "id,name,size,mimeType,webViewLink,quotaBytesUsed,resourceKey,shortcutDetails,trashed"
 
@@ -125,7 +138,8 @@ func (c *Cloner) buildService(authMode string) (*drivev3.Service, error) {
 		if err != nil {
 			return nil, newError("Google auth failed. Check the configured credentials.")
 		}
-		return drivev3.NewService(c.ctx, option.WithCredentials(creds))
+		client := timeoutClient(c.ctx, creds.TokenSource)
+		return drivev3.NewService(c.ctx, option.WithHTTPClient(client))
 
 	case authMode == "oauth" || strings.HasPrefix(authMode, oauthAuthPrefix):
 		creds, err := c.oauthCredentialsForMode(authMode)
@@ -138,12 +152,16 @@ func (c *Cloner) buildService(authMode string) (*drivev3.Service, error) {
 			Endpoint:     googleoauth.Endpoint,
 			Scopes:       []string{drivev3.DriveScope},
 		}
-		source := conf.TokenSource(c.ctx, &oauth2.Token{RefreshToken: creds.RefreshToken})
+		// Bound the eager refresh below; conf.TokenSource would otherwise use
+		// the default client, which has no timeout.
+		refreshCtx := context.WithValue(c.ctx, oauth2.HTTPClient, &http.Client{Timeout: httpTimeout})
+		source := conf.TokenSource(refreshCtx, &oauth2.Token{RefreshToken: creds.RefreshToken})
 		// Refresh eagerly so bad credentials surface here rather than mid-clone.
 		if _, err := source.Token(); err != nil {
 			return nil, err
 		}
-		return drivev3.NewService(c.ctx, option.WithTokenSource(source))
+		client := timeoutClient(refreshCtx, source)
+		return drivev3.NewService(c.ctx, option.WithHTTPClient(client))
 	}
 
 	return nil, newError("Unknown Google auth mode: %s", authMode)
