@@ -180,3 +180,60 @@ func TestSearchItemSize(t *testing.T) {
 		t.Error("Size() should report unknown when nothing is known")
 	}
 }
+
+func TestBuildSearchQuery(t *testing.T) {
+	cases := []struct {
+		query    string
+		itemType string
+		want     string
+	}{
+		{"ubuntu", "files", `name contains 'ubuntu' and trashed=false and mimeType != '` + FolderMIME + `'`},
+		{"ubuntu", "folders", `name contains 'ubuntu' and trashed=false and mimeType = '` + FolderMIME + `'`},
+		{"ubuntu", "all", `name contains 'ubuntu' and trashed=false`},
+		// An apostrophe must be escaped, not left to close the quoted literal.
+		{"Marvel's", "all", `name contains 'Marvel\'s' and trashed=false`},
+		{"Marvel's Spider-Man 2", "all",
+			`name contains 'Marvel\'s' and name contains 'Spider-Man' and name contains '2' and trashed=false`},
+		{`back\slash`, "all", `name contains 'back\\slash' and trashed=false`},
+		{`quote' and \ mix`, "all",
+			`name contains 'quote\'' and name contains 'and' and name contains '\\' and name contains 'mix' and trashed=false`},
+	}
+
+	for _, tc := range cases {
+		if got := buildSearchQuery(tc.query, tc.itemType); got != tc.want {
+			t.Errorf("buildSearchQuery(%q, %q) =\n  %s\nwant\n  %s", tc.query, tc.itemType, got, tc.want)
+		}
+	}
+}
+
+// Every quote inside a built query must be escaped or balanced, which is what
+// the Drive API means by "no closing quotation".
+func TestBuildSearchQueryQuotesBalance(t *testing.T) {
+	queries := []string{
+		"Marvel's Spider-Man 2", "it's", "'", "''", "'''", `a'b'c`,
+		`don't stop 'til you get enough`, `tra\iling\`, `"double"`, "Amélie 日本語 🎬",
+	}
+	for _, query := range queries {
+		for _, itemType := range []string{"files", "folders", "all"} {
+			built := buildSearchQuery(query, itemType)
+			open := false
+			for i, char := range built {
+				if char != '\'' {
+					continue
+				}
+				// Count the backslashes immediately before this quote: an odd
+				// number means it is escaped and does not toggle the literal.
+				slashes := 0
+				for j := i - 1; j >= 0 && built[j] == '\\'; j-- {
+					slashes++
+				}
+				if slashes%2 == 0 {
+					open = !open
+				}
+			}
+			if open {
+				t.Errorf("buildSearchQuery(%q, %q) leaves an unclosed quote:\n  %s", query, itemType, built)
+			}
+		}
+	}
+}

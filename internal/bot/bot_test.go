@@ -51,6 +51,15 @@ func TestParseCommand(t *testing.T) {
 		{"  /n  1AbCdEfGhIj  ", "n", "1AbCdEfGhIj", "1AbCdEfGhIj", true},
 		{"hello", "", "", "", false},
 		{"/", "", "", "", false},
+		// A newline after the command still carries the payload: the README
+		// documents pasting a batch of IDs one per line.
+		{"/c\n1AbCdEfGhIj\n1XyZaBcDeFg", "c", "1AbCdEfGhIj", "1AbCdEfGhIj\n1XyZaBcDeFg", true},
+		{"/c\t1AbCdEfGhIj", "c", "1AbCdEfGhIj", "1AbCdEfGhIj", true},
+		{"/s@MyCloneBot\nMarvel's Spider-Man 2", "s", "Marvel's", "Marvel's Spider-Man 2", true},
+		// Mention and case are both normalized away.
+		{"/S@MyCloneBot ubuntu", "s", "ubuntu", "ubuntu", true},
+		{"/c", "c", "", "", true},
+		{"/@MyCloneBot", "", "", "", false},
 	}
 
 	for _, tc := range cases {
@@ -92,7 +101,28 @@ func TestParseSearchArgs(t *testing.T) {
 		{"--dir ubuntu", "", "files", true},
 		{"ubuntu --dir --all", "", "files", true},
 		{"ubuntu --dir --dir", "", "files", true},
-		{`ubuntu "unclosed`, "", "files", true},
+		// An apostrophe is a character in a title, not a quote to be closed.
+		{"Marvel's Spider-Man 2", "Marvel's Spider-Man 2", "files", false},
+		{"Marvel's Spider-Man 2 --dir", "Marvel's Spider-Man 2", "folders", false},
+		{`ubuntu "unclosed`, "ubuntu unclosed", "files", false},
+		{"it's a wonderful life", "it's a wonderful life", "files", false},
+		{`don't stop 'til you get enough`, `don't stop til you get enough`, "files", false},
+		// A trailing backslash used to fail as an unfinished escape.
+		{`ubuntu\`, `ubuntu\`, "files", false},
+		{`C:\path\to\file`, `C:\path\to\file`, "files", false},
+		// Whitespace shapes collapse to the same query.
+		{"  ubuntu   server  ", "ubuntu server", "files", false},
+		{"ubuntu\tserver\niso", "ubuntu server iso", "files", false},
+		// Nothing but a flag, or nothing but quotes, leaves an empty query.
+		{"--dir", "", "folders", false},
+		{"--all", "", "all", false},
+		{`''`, "", "files", false},
+		{`" "`, "", "files", false},
+		{"", "", "files", false},
+		// Unicode and emoji survive intact.
+		{"Amélie 日本語 🎬", "Amélie 日本語 🎬", "files", false},
+		// A flag-looking word that is not a flag stays part of the query.
+		{"--director cut", "--director cut", "files", false},
 	}
 
 	for _, tc := range cases {
@@ -169,6 +199,22 @@ func TestSources(t *testing.T) {
 		// Search-result tokens are decoded to their Drive ID.
 		{token, []string{"1AbCdEfGhIjKlMnOpQrStUvWxYz"}},
 		{"", nil},
+		// A search query typed into /c queues nothing.
+		{"a shop for killers --dir", nil},
+		// Junk words alongside a real ID leave only the ID.
+		{"shop 1AbCdEfGhIjKl --dir", []string{"1AbCdEfGhIjKl"}},
+		// Links survive whole: ParseLink still needs the resourcekey a bare ID
+		// would drop.
+		{"https://drive.google.com/file/d/1AbCdEfGhIjKl/view?usp=sharing",
+			[]string{"https://drive.google.com/file/d/1AbCdEfGhIjKl/view?usp=sharing"}},
+		{"https://drive.google.com/drive/folders/1AbCdEfGhIjKl",
+			[]string{"https://drive.google.com/drive/folders/1AbCdEfGhIjKl"}},
+		// Newline-separated pastes, the shape the README documents.
+		{"1AbCdEfGhIjKl\n1XyZaBcDeFgHi", []string{"1AbCdEfGhIjKl", "1XyZaBcDeFgHi"}},
+		// Punctuation-only and short words never reach the network.
+		{"...", nil},
+		{"a b c", nil},
+		{"🎬", nil},
 	}
 
 	for _, tc := range cases {

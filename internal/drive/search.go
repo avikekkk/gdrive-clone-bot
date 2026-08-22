@@ -157,7 +157,9 @@ const searchFields = "files(id,name,size,mimeType,webViewLink,modifiedTime,drive
 // searchDriveWorkers bounds the per-drive queries one identity has in flight.
 const searchDriveWorkers = 8
 
-func (c *Cloner) searchAllSharedDrives(query string, limit int, itemType string) ([]*SearchItem, error) {
+// buildSearchQuery renders the Drive query for a search. Every term is escaped,
+// so a title like "Marvel's Spider-Man 2" is matched rather than rejected.
+func buildSearchQuery(query, itemType string) string {
 	var queryTerms []string
 	for _, term := range strings.Fields(query) {
 		queryTerms = append(queryTerms, escapeQueryValue(term))
@@ -177,7 +179,11 @@ func (c *Cloner) searchAllSharedDrives(query string, limit int, itemType string)
 	case "folders":
 		queryParts = append(queryParts, fmt.Sprintf("mimeType = '%s'", FolderMIME))
 	}
-	q := strings.Join(queryParts, " and ")
+	return strings.Join(queryParts, " and ")
+}
+
+func (c *Cloner) searchAllSharedDrives(query string, limit int, itemType string) ([]*SearchItem, error) {
+	q := buildSearchQuery(query, itemType)
 
 	drives, err := c.listSharedDrives()
 	if err != nil {
