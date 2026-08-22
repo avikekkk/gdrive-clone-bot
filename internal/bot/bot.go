@@ -20,6 +20,7 @@ import (
 	"github.com/gotd/td/tgerr"
 
 	"github.com/avisek/gdrive-clone-bot/internal/config"
+	"github.com/avisek/gdrive-clone-bot/internal/drive"
 	"github.com/avisek/gdrive-clone-bot/internal/store"
 )
 
@@ -202,9 +203,9 @@ func parseCommand(text string) (command string, args []string, payload string, o
 	}
 
 	args = fields[1:]
-	if parts := strings.SplitN(text, " ", 2); len(parts) == 2 {
-		payload = strings.TrimSpace(parts[1])
-	}
+	// Everything after the command word, whatever whitespace separated them:
+	// "/c\n<id>\n<id>" is a documented way to paste a batch of IDs.
+	payload = strings.TrimSpace(text[len(fields[0]):])
 	return command, args, payload, true
 }
 
@@ -312,7 +313,8 @@ func (r *request) edit(ctx context.Context, msgID int, text string, markup tg.Re
 var sourceSeparators = regexp.MustCompile(`[\s,]+`)
 
 // sources returns every Drive link/ID/token in the command, in order and
-// without duplicates.
+// without duplicates. Words that cannot be a Drive reference are dropped, so a
+// search query typed into /c does not queue one item per word.
 func (r *request) sources() []string {
 	seen := map[string]bool{}
 	var sources []string
@@ -324,6 +326,8 @@ func (r *request) sources() []string {
 		}
 		if decoded := decodeDriveIDToken(field); decoded != "" {
 			field = decoded
+		} else if _, err := drive.ParseLink(field); err != nil {
+			continue
 		}
 		if seen[field] {
 			continue

@@ -59,7 +59,7 @@ func (r *request) cloneOne(ctx context.Context, b *batch, index int) {
 	cloner, err := drive.New(ctx, r.bot.cfg, "")
 	if err != nil {
 		log.Warn("Clone precheck failed", "reason", err)
-		b.fail(ctx, index, codeBlock(simpleErrorText(err.Error())))
+		b.fail(ctx, index, html.EscapeString(simpleErrorText(err.Error())))
 		return
 	}
 
@@ -156,7 +156,7 @@ func (r *request) reportCloneFailure(
 	if errors.As(err, &driveErr) {
 		msg := simpleErrorText(driveErr.Error())
 		log.Warn(label, "reason", msg)
-		b.fail(ctx, index, codeBlock(msg))
+		b.fail(ctx, index, html.EscapeString(msg))
 		return
 	}
 
@@ -165,7 +165,7 @@ func (r *request) reportCloneFailure(
 		return
 	}
 	log.Error("Unhandled clone failure", "error", err)
-	b.fail(ctx, index, codeBlock(errUnexpected))
+	b.fail(ctx, index, errUnexpected)
 }
 
 func existsMessage(url string) string {
@@ -276,7 +276,7 @@ func (r *request) reportDeleteFailure(
 	if errors.As(err, &driveErr) {
 		msg := simpleErrorText(driveErr.Error())
 		log.Warn(label, "reason", msg)
-		b.fail(ctx, index, codeBlock(msg))
+		b.fail(ctx, index, html.EscapeString(msg))
 		return
 	}
 
@@ -285,7 +285,7 @@ func (r *request) reportDeleteFailure(
 		return
 	}
 	log.Error("Unhandled nuke failure", "error", err)
-	b.fail(ctx, index, codeBlock(errUnexpected))
+	b.fail(ctx, index, errUnexpected)
 }
 
 // replyLogged sends a reply, logging rather than propagating a send failure.
