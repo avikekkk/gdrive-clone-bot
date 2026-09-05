@@ -108,12 +108,12 @@ func (r *request) handleSearch(ctx context.Context) {
 		return
 	}
 
-	log := r.bot.log.With("context", r.context(), "query", query, "type", itemType)
+	log := r.bot.log.With("chat_id", r.chatID(), "user_id", r.userID(), "query", query, "type", itemType)
 	log.Info("Search requested")
 
 	searchingMsgID, err := r.reply(ctx, "Searching")
 	if err != nil {
-		log.Warn("Failed to post status message", "error", err)
+		log.Warn("Failed to post status message", "err", err)
 		return
 	}
 
@@ -129,7 +129,7 @@ func (r *request) handleSearch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Error("Unhandled search failure", "error", err)
+		log.Error("Unhandled search failure", "err", err)
 		r.editLogged(ctx, searchingMsgID, errUnexpected)
 		return
 	}
@@ -151,7 +151,7 @@ func (r *request) handleSearch(ctx context.Context) {
 	text, totalPages, page := buildSearchPageText(results, query, 0)
 	log.Info("Search completed", "results", len(results))
 	if err := r.edit(ctx, searchingMsgID, text, buildSearchPageMarkup(token, page, totalPages)); err != nil {
-		log.Warn("Failed to show search results", "error", err)
+		log.Warn("Failed to show search results", "err", err)
 		return
 	}
 	r.scheduleRedact(ctx, searchingMsgID, token)
@@ -188,7 +188,7 @@ func (r *request) scheduleRedact(ctx context.Context, msgID int, token string) {
 		r.bot.sessions.remove(token)
 		// If the requester already closed it, this edit is a no-op.
 		if err := r.edit(ctx, msgID, redactedMessage, clearKeyboard()); err != nil && !isNotModified(err) {
-			r.bot.log.Warn("Failed to auto-redact search results", "error", err)
+			r.bot.log.Warn("Failed to auto-redact search results", "err", err)
 		}
 	}()
 }
@@ -357,7 +357,7 @@ func (b *Bot) closeSearch(ctx context.Context, e tg.Entities, u *tg.UpdateBotCal
 
 	b.sessions.remove(token)
 	if err := b.editCallbackMessage(ctx, e, u, redactedMessage, clearKeyboard()); err != nil && !isNotModified(err) {
-		b.log.Warn("Failed to redact search results", "error", err)
+		b.log.Warn("Failed to redact search results", "err", err)
 	}
 	b.answerCallback(ctx, u.QueryID, "Closed", false)
 }
@@ -389,7 +389,7 @@ func (b *Bot) paginateSearch(ctx context.Context, e tg.Entities, u *tg.UpdateBot
 	text, totalPages, safePage := buildSearchPageText(session.results, session.query, page)
 	if err := b.editCallbackMessage(ctx, e, u, text, buildSearchPageMarkup(token, safePage, totalPages)); err != nil {
 		if !isNotModified(err) {
-			b.log.Warn("Failed to edit search page", "error", err)
+			b.log.Warn("Failed to edit search page", "err", err)
 		}
 	}
 	b.answerCallback(ctx, u.QueryID, "", false)
@@ -424,6 +424,6 @@ func (b *Bot) answerCallback(ctx context.Context, queryID int64, text string, al
 		req.SetAlert(true)
 	}
 	if _, err := b.api.MessagesSetBotCallbackAnswer(ctx, req); err != nil {
-		b.log.Warn("Failed to answer callback query", "error", err)
+		b.log.Warn("Failed to answer callback query", "err", err)
 	}
 }

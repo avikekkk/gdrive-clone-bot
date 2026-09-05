@@ -52,12 +52,12 @@ func (r *request) handleServer(ctx context.Context) {
 		return
 	}
 
-	log := r.bot.log.With("context", r.context())
+	log := r.bot.log.With("chat_id", r.chatID(), "user_id", r.userID())
 	log.Info("Server stats requested")
 
 	statsMsgID, err := r.reply(ctx, "Fetching stats")
 	if err != nil {
-		log.Warn("Failed to post status message", "error", err)
+		log.Warn("Failed to post status message", "err", err)
 		return
 	}
 

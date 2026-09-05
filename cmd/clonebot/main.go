@@ -70,7 +70,7 @@ func setupLogging() (*slog.Logger, func(), error) {
 		MaxBackups: 5,
 	}
 
-	handler := slog.NewTextHandler(io.MultiWriter(os.Stderr, rotator), &slog.HandlerOptions{
+	handler := slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator), &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 	logger := slog.New(handler)

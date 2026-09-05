@@ -45,7 +45,7 @@ func (r *request) startBatch(ctx context.Context, sources []string) *batch {
 
 	msgID, err := r.reply(ctx, b.text())
 	if err != nil {
-		r.bot.log.Warn("Failed to post status message", "error", err)
+		r.bot.log.Warn("Failed to post status message", "err", err)
 		return nil
 	}
 	b.msgID = msgID

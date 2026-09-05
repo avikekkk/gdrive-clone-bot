@@ -161,7 +161,7 @@ func Run(ctx context.Context, cfg *config.Bot, logger *slog.Logger) error {
 		b.runCtx = ctx
 		b.reportCtx = connCtx
 		close(b.ready)
-		logger.Info("Bot started", "username", self.Username, "user_id", self.ID)
+		logger.Info("Telegram client initialised", "bot", "@"+self.Username)
 
 		select {
 		case <-ctx.Done():
@@ -206,7 +206,7 @@ func (b *Bot) goHandle(name string, fn func(ctx context.Context)) {
 	b.stopMu.Lock()
 	if b.stopping {
 		b.stopMu.Unlock()
-		b.log.Info("Ignoring command during shutdown", "handler", name)
+		b.log.Info("Ignoring update during shutdown", "what", name)
 		return
 	}
 	b.handlers.Add(1)
@@ -215,11 +215,30 @@ func (b *Bot) goHandle(name string, fn func(ctx context.Context)) {
 		defer b.handlers.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				b.log.Error("Handler panicked", "handler", name, "panic", r)
+				b.log.Error("Recovered from panic", "where", name, "panic", r)
 			}
 		}()
 		fn(b.runCtx)
 	}()
+}
+
+// runCommand runs a command handler through goHandle and, once it returns,
+// logs one summary line. lag is how long the command sat between being typed
+// and reaching the handler, which is the half of a slow command this bot does
+// not control; without it a delayed delivery and a slow handler look alike.
+func (b *Bot) runCommand(command string, req *request, fn func(ctx context.Context)) {
+	b.goHandle(command, func(ctx context.Context) {
+		start := time.Now()
+		lag := start.Sub(time.Unix(int64(req.msg.Date), 0))
+		ok := false
+		defer func() {
+			b.log.Info("Command handled", "command", command, "chat_id", req.chatID(),
+				"user_id", req.userID(), "lag", lag.Round(time.Millisecond),
+				"took", time.Since(start).Round(time.Millisecond), "ok", ok)
+		}()
+		fn(ctx)
+		ok = true
+	})
 }
 
 // messageUpdate is satisfied by both private/basic-group and channel updates.
@@ -242,21 +261,21 @@ func (b *Bot) onMessage(e tg.Entities, u messageUpdate) error {
 
 	switch command {
 	case "start", "help":
-		b.goHandle(command, req.handleHelp)
+		b.runCommand(command, req, req.handleHelp)
 	case "c":
-		b.goHandle("clone", req.handleClone)
+		b.runCommand("clone", req, req.handleClone)
 	case "s":
-		b.goHandle("search", req.handleSearch)
+		b.runCommand("search", req, req.handleSearch)
 	case "n":
-		b.goHandle("delete", req.handleDelete)
+		b.runCommand("delete", req, req.handleDelete)
 	case "logs":
-		b.goHandle("logs", req.handleLogs)
+		b.runCommand("logs", req, req.handleLogs)
 	case "auth":
-		b.goHandle("auth", req.handleAuth)
+		b.runCommand("auth", req, req.handleAuth)
 	case "unauth":
-		b.goHandle("unauth", req.handleUnauth)
+		b.runCommand("unauth", req, req.handleUnauth)
 	case "server":
-		b.goHandle("server", req.handleServer)
+		b.runCommand("server", req, req.handleServer)
 	}
 	return nil
 }
@@ -329,10 +348,6 @@ func (r *request) chatID() int64 {
 	return 0
 }
 
-func (r *request) context() string {
-	return "chat_id=" + itoa(r.chatID()) + " user_id=" + itoa(r.userID())
-}
-
 func (r *request) isOwner() bool { return r.userID() == r.bot.cfg.OwnerID }
 
 // isAuthorizedCloneChat allows the static .env allowlist plus anything granted
@@ -343,7 +358,7 @@ func (r *request) isAuthorizedCloneChat() bool {
 	}
 	authorized, err := r.bot.auth.IsAuthorized(r.chatID(), r.userID())
 	if err != nil {
-		r.bot.log.Error("Failed to check authorization", "error", err)
+		r.bot.log.Error("Failed to check authorization", "err", err)
 		return false
 	}
 	return authorized
@@ -354,9 +369,9 @@ func (r *request) rejectNonOwner(ctx context.Context) bool {
 	if r.isOwner() {
 		return false
 	}
-	r.bot.log.Warn("Unauthorized command rejected", "context", r.context())
+	r.bot.log.Warn("Unauthorized command rejected", "chat_id", r.chatID(), "user_id", r.userID())
 	if _, err := r.reply(ctx, "<code>Unauthorized</code>"); err != nil {
-		r.bot.log.Warn("Failed to send rejection", "error", err)
+		r.bot.log.Warn("Failed to send rejection", "err", err)
 	}
 	return true
 }
@@ -366,9 +381,9 @@ func (r *request) rejectUnauthorizedClone(ctx context.Context) bool {
 	if r.isOwner() || r.isAuthorizedCloneChat() {
 		return false
 	}
-	r.bot.log.Warn("Unauthorized clone command rejected", "context", r.context())
+	r.bot.log.Warn("Unauthorized clone command rejected", "chat_id", r.chatID(), "user_id", r.userID())
 	if _, err := r.reply(ctx, "<code>Unauthorized</code>"); err != nil {
-		r.bot.log.Warn("Failed to send rejection", "error", err)
+		r.bot.log.Warn("Failed to send rejection", "err", err)
 	}
 	return true
 }
@@ -444,7 +459,7 @@ func (r *request) handleHelp(ctx context.Context) {
 		return
 	}
 	if _, err := r.reply(ctx, helpText); err != nil {
-		r.bot.log.Warn("Failed to send help", "error", err)
+		r.bot.log.Warn("Failed to send help", "err", err)
 	}
 }
 

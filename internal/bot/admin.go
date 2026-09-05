@@ -21,7 +21,7 @@ func (r *request) handleLogs(ctx context.Context) {
 		return
 	}
 
-	log := r.bot.log.With("context", r.context())
+	log := r.bot.log.With("chat_id", r.chatID(), "user_id", r.userID())
 	log.Info("Logs requested")
 
 	info, err := os.Stat(LogFilePath)
@@ -32,7 +32,7 @@ func (r *request) handleLogs(ctx context.Context) {
 
 	file, err := uploader.NewUploader(r.bot.api).FromPath(ctx, LogFilePath)
 	if err != nil {
-		log.Warn("Failed to upload log file", "error", err)
+		log.Warn("Failed to upload log file", "err", err)
 		r.replyLogged(ctx, "Error sending log file")
 		return
 	}
@@ -44,7 +44,7 @@ func (r *request) handleLogs(ctx context.Context) {
 			MIME("text/plain").
 			ForceFile(true))
 	if err != nil {
-		log.Warn("Failed to send log file", "error", err)
+		log.Warn("Failed to send log file", "err", err)
 		r.replyLogged(ctx, "Error sending log file")
 		return
 	}
@@ -92,7 +92,7 @@ func (r *request) repliedUserID(ctx context.Context) int64 {
 		messages, err = r.bot.api.MessagesGetMessages(ctx, ids)
 	}
 	if err != nil {
-		r.bot.log.Warn("Failed to fetch replied message", "error", err)
+		r.bot.log.Warn("Failed to fetch replied message", "err", err)
 		return 0
 	}
 
@@ -143,7 +143,7 @@ func (r *request) handleAuth(ctx context.Context) {
 
 	added, err := r.bot.auth.Authorize(id, r.userID())
 	if err != nil {
-		r.bot.log.Error("Failed to authorize", "id", id, "error", err)
+		r.bot.log.Error("Failed to authorize", "id", id, "err", err)
 		r.replyLogged(ctx, "Error saving authorization")
 		return
 	}
@@ -179,7 +179,7 @@ func (r *request) handleUnauth(ctx context.Context) {
 
 	removed, err := r.bot.auth.Revoke(id)
 	if err != nil {
-		r.bot.log.Error("Failed to revoke authorization", "id", id, "error", err)
+		r.bot.log.Error("Failed to revoke authorization", "id", id, "err", err)
 		r.replyLogged(ctx, "Error saving authorization")
 		return
 	}
