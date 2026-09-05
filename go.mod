@@ -5,9 +5,11 @@ go 1.26.5
 require (
 	github.com/gotd/td v0.161.0
 	github.com/joho/godotenv v1.5.1
+	github.com/shirou/gopsutil/v4 v4.26.7
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.293.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+	modernc.org/sqlite v1.56.0
 )
 
 require (
@@ -48,7 +50,6 @@ require (
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
-	github.com/shirou/gopsutil/v4 v4.26.7 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
@@ -77,6 +78,5 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.56.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )

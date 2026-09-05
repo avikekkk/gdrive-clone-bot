@@ -225,10 +225,12 @@ func retryDo[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 		if delay > 6 {
 			delay = 6
 		}
+		timer := time.NewTimer(time.Duration(delay) * time.Second)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return zero, ctx.Err()
-		case <-time.After(time.Duration(delay) * time.Second):
+		case <-timer.C:
 		}
 	}
 	if lastErr != nil {

@@ -162,6 +162,7 @@ func (r *request) reportCloneFailure(
 
 	if ctx.Err() != nil {
 		log.Warn(label, "reason", "shutting down")
+		b.fail(ctx, index, errInterrupted)
 		return
 	}
 	log.Error("Unhandled clone failure", "error", err)
@@ -282,6 +283,7 @@ func (r *request) reportDeleteFailure(
 
 	if ctx.Err() != nil {
 		log.Warn(label, "reason", "shutting down")
+		b.fail(ctx, index, errInterrupted)
 		return
 	}
 	log.Error("Unhandled nuke failure", "error", err)
@@ -318,6 +320,7 @@ const (
 	errBadRequest       = "Bad Drive request"
 	errNoPerms          = "You don't have perms"
 	errUnexpected       = "Unexpected error"
+	errInterrupted      = "Interrupted by a bot restart, please try again"
 )
 
 // simpleErrorText collapses a detailed Drive error into the short status the
