@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
-
 	"github.com/avisek/gdrive-clone-bot/internal/bot"
 	"github.com/avisek/gdrive-clone-bot/internal/config"
 )
@@ -58,23 +56,23 @@ func run() error {
 	return nil
 }
 
-// setupLogging writes to the console and to a size-rotated log file.
+// setupLogging writes to the console and to a log file that starts fresh on
+// every run, so /logs uploads only the current session, as the usenet bot does.
 func setupLogging() (*slog.Logger, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("create log directory: %w", err)
 	}
 
-	rotator := &lumberjack.Logger{
-		Filename:   logFile,
-		MaxSize:    5, // megabytes
-		MaxBackups: 5,
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log file: %w", err)
 	}
 
-	handler := slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator), &slog.HandlerOptions{
+	handler := slog.NewTextHandler(io.MultiWriter(os.Stdout, file), &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
-	return logger, func() { _ = rotator.Close() }, nil
+	return logger, func() { _ = file.Close() }, nil
 }
