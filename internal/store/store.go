@@ -36,6 +36,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database %s: %w", path, err)
 	}
+	// One connection: SQLite serialises writers anyway, and a second pooled
+	// connection only turns a concurrent read into "database is locked".
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema in %s: %w", path, err)

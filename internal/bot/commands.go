@@ -48,7 +48,7 @@ func (r *request) handleClone(ctx context.Context) {
 func (r *request) cloneOne(ctx context.Context, b *batch, index int) {
 	source := b.items[index].source
 
-	log := r.bot.log.With("context", r.context(), "link", source)
+	log := r.bot.log.With("chat_id", r.chatID(), "user_id", r.userID(), "link", source)
 	if b.multi() {
 		log = log.With("item", itoa(int64(index+1))+"/"+itoa(int64(len(b.items))))
 		// Take this item out of the queue display now that its turn has come.
@@ -162,9 +162,10 @@ func (r *request) reportCloneFailure(
 
 	if ctx.Err() != nil {
 		log.Warn(label, "reason", "shutting down")
+		b.fail(ctx, index, errInterrupted)
 		return
 	}
-	log.Error("Unhandled clone failure", "error", err)
+	log.Error("Unhandled clone failure", "err", err)
 	b.fail(ctx, index, errUnexpected)
 }
 
@@ -207,7 +208,7 @@ func (r *request) handleDelete(ctx context.Context) {
 func (r *request) deleteOne(ctx context.Context, b *batch, index int) {
 	source := b.items[index].source
 
-	log := r.bot.log.With("context", r.context(), "link", source)
+	log := r.bot.log.With("chat_id", r.chatID(), "user_id", r.userID(), "link", source)
 	if b.multi() {
 		log = log.With("item", itoa(int64(index+1))+"/"+itoa(int64(len(b.items))))
 		b.status(ctx, index, statusChecking)
@@ -282,23 +283,24 @@ func (r *request) reportDeleteFailure(
 
 	if ctx.Err() != nil {
 		log.Warn(label, "reason", "shutting down")
+		b.fail(ctx, index, errInterrupted)
 		return
 	}
-	log.Error("Unhandled nuke failure", "error", err)
+	log.Error("Unhandled nuke failure", "err", err)
 	b.fail(ctx, index, errUnexpected)
 }
 
 // replyLogged sends a reply, logging rather than propagating a send failure.
 func (r *request) replyLogged(ctx context.Context, text string) {
 	if _, err := r.reply(ctx, text); err != nil {
-		r.bot.log.Warn("Failed to send reply", "error", err)
+		r.bot.log.Warn("Failed to send reply", "err", err)
 	}
 }
 
 // editLogged edits a message, treating a no-op edit as success.
 func (r *request) editLogged(ctx context.Context, msgID int, text string) {
 	if err := r.edit(ctx, msgID, text, nil); err != nil && !isNotModified(err) {
-		r.bot.log.Warn("Failed to edit message", "error", err)
+		r.bot.log.Warn("Failed to edit message", "err", err)
 	}
 }
 
@@ -318,6 +320,7 @@ const (
 	errBadRequest       = "Bad Drive request"
 	errNoPerms          = "You don't have perms"
 	errUnexpected       = "Unexpected error"
+	errInterrupted      = "Interrupted by a bot restart, please try again"
 )
 
 // simpleErrorText collapses a detailed Drive error into the short status the
