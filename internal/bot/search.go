@@ -136,8 +136,7 @@ func (r *request) handleSearch(ctx context.Context) {
 
 	if len(results) == 0 {
 		log.Info("Search completed", "results", 0)
-		r.editLogged(ctx, searchingMsgID,
-			header("SEARCH RESULTS")+"\n"+codeBlock(query)+"\n<code>No results</code>")
+		r.editLogged(ctx, searchingMsgID, "No results")
 		return
 	}
 
